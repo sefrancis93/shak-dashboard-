@@ -878,9 +878,9 @@ setInterval(checkNotifs,60000);
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();openQC()}if(e.key==='Escape')closeM()});
 
 /* ---- FIREBASE SYNC ---- */
-const FB_CFG='shak_fb_cfg';
-const FB_KEY='shak_fb_key';
-let fbDb=null,fbPath=null,pushTimer=null;
+var FB_CFG='shak_fb_cfg';
+var FB_KEY='shak_fb_key';
+var fbDb=null,fbPath=null,pushTimer=null;
 
 function hsh(s){let h=0;for(let i=0;i<s.length;i++)h=(Math.imul(31,h)+s.charCodeAt(i))|0;return Math.abs(h).toString(36)}
 
@@ -1003,15 +1003,19 @@ function disconnectSync(){
   toast('Disconnected');
 }
 
-// Pre-fill settings if already configured
-(function(){
-  const c=localStorage.getItem(FB_CFG);const k=localStorage.getItem(FB_KEY);
-  const ci=document.getElementById('fb-config-input');const ki=document.getElementById('sync-key-input');
-  if(c&&ci)ci.value=c;
-  if(k&&ki)ki.value=k;
-})();
-
 initFirebase();
+
+// Pre-fill settings UI after page is ready
+window.addEventListener('DOMContentLoaded',function(){
+  try{
+    const c=localStorage.getItem('shak_fb_cfg');
+    const k=localStorage.getItem('shak_fb_key');
+    const ci=document.getElementById('fb-config-input');
+    const ki=document.getElementById('sync-key-input');
+    if(c&&ci)ci.value=c;
+    if(k&&ki)ki.value=k;
+  }catch(e){}
+});
 </script>
 </body>
 </html>
