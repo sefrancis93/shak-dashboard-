@@ -451,6 +451,10 @@ function loadS(){
     const s=JSON.parse(localStorage.getItem(DB));
     if(!s)return{...DEF};
     const m={...DEF,...s};
+    // Restore Jamaica trip defaults if trips got accidentally wiped
+    if(!m.trips||m.trips.length===0)m.trips=DEF.trips.slice();
+    // Restore default habits if habits got wiped
+    if(!m.habits||m.habits.length===0)m.habits=DEF.habits.slice();
     m.trips=m.trips.map(t=>({stops:[],flights:[],accommodation:[],todos:[],packing:[],budget:{target:0,spent:0},...t}));
     return m;
   }catch(e){return{...DEF}}
@@ -922,11 +926,30 @@ function schedulePush() {
   }, 1500);
 }
 
+function mergeArrays(local, cloud) {
+  if (!local || !local.length) return cloud || [];
+  if (!cloud || !cloud.length) return local || [];
+  var merged = local.slice();
+  var localIds = {};
+  merged.forEach(function(x) { if (x.id) localIds[x.id] = true; });
+  cloud.forEach(function(x) {
+    if (!x.id) return;
+    if (localIds[x.id]) {
+      var idx = -1;
+      for (var j = 0; j < merged.length; j++) { if (merged[j].id === x.id) { idx = j; break; } }
+      if (idx > -1) merged[idx] = x;
+    } else {
+      merged.push(x);
+    }
+  });
+  return merged;
+}
+
 function pullFromCloud(quiet) {
   if (!fbUrl) return;
   fetch(fbUrl).then(function(r) {
-    if (!r.ok) { 
-      r.text().then(function(t){ 
+    if (!r.ok) {
+      r.text().then(function(t){
         if (!quiet) toast('Pull failed: ' + t.slice(0,40));
         syncStatus('error', t.slice(0,30));
       });
@@ -934,20 +957,30 @@ function pullFromCloud(quiet) {
     }
     return r.json();
   }).then(function(cloud) {
-    if (!cloud) return;
-    if (cloud._ts && (!S._ts || cloud._ts > S._ts)) {
-      S = Object.assign({}, DEF, cloud);
-      S.trips = (S.trips || []).map(function(t) {
-        return Object.assign({stops:[],flights:[],accommodation:[],todos:[],packing:[],budget:{target:0,spent:0}}, t);
-      });
-      localStorage.setItem(DB, JSON.stringify(S));
+    if (!cloud || typeof cloud !== 'object' || Array.isArray(cloud)) {
       syncStatus('synced');
-      if (!quiet) { renderAll(); toast('Pulled from cloud ✓'); }
-    } else {
-      syncStatus('synced');
-      if (!quiet) toast('Already up to date');
+      if (!quiet) toast('Nothing in cloud yet');
+      return;
     }
+    var arrKeys = ['tasks','events','income','outgoings','pots','subs','content','hashPresets','ideas','inbox','dumps','habits','books','trips','journal','customPrompts'];
+    arrKeys.forEach(function(k) {
+      S[k] = mergeArrays(S[k], cloud[k]);
+    });
+    if (cloud._ts && (!S._ts || cloud._ts > S._ts)) {
+      if (cloud.oneThing) S.oneThing = cloud.oneThing;
+      if (cloud.settings) S.settings = Object.assign({}, S.settings, cloud.settings);
+    }
+    S.trips = S.trips.map(function(t) {
+      return Object.assign({stops:[],flights:[],accommodation:[],todos:[],packing:[],budget:{target:0,spent:0}}, t);
+    });
+    if (!S.trips || S.trips.length === 0) S.trips = DEF.trips.slice();
+    if (!S.habits || S.habits.length === 0) S.habits = DEF.habits.slice();
+    S._ts = Date.now();
+    localStorage.setItem(DB, JSON.stringify(S));
+    syncStatus('synced');
+    if (!quiet) { renderAll(); toast('Synced ✓'); }
   }).catch(function(e) {
+    console.warn('Pull err:', e);
     syncStatus('error', e.message);
     if (!quiet) toast('Pull failed: ' + e.message);
   });
