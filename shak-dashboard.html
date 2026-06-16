@@ -952,18 +952,30 @@ function initFirebase() {
   var cfgRaw = localStorage.getItem(FB_CFG);
   var syncKey = localStorage.getItem(FB_KEY);
   if (!cfgRaw || !syncKey) { syncStatus('none'); return; }
-  if (typeof firebase === 'undefined') { syncStatus('none'); return; }
+  if (typeof firebase === 'undefined') {
+    var bar = document.getElementById('sync-status-bar');
+    if (bar) bar.textContent = 'v1.1 · firebase SDK not loaded';
+    return;
+  }
   try {
     var cfg = JSON.parse(cfgRaw);
     if (!cfg.databaseURL) { syncStatus('nodb'); return; }
-    try { firebase.initializeApp(cfg); } catch(ex) { /* already initialised */ }
-    fbDb = firebase.database();
+    var app;
+    if (firebase.apps && firebase.apps.length > 0) {
+      app = firebase.app();
+    } else {
+      app = firebase.initializeApp(cfg);
+    }
+    fbDb = firebase.database(app);
     fbPath = 'shak/' + hsh(syncKey);
     syncStatus('connecting');
     pullFromCloud(true);
   } catch(e) {
     console.warn('Firebase init err:', e);
-    syncStatus('error');
+    var bar = document.getElementById('sync-status-bar');
+    var card = document.getElementById('sync-card-status');
+    if (bar) bar.textContent = 'Error: ' + e.message.slice(0, 50);
+    if (card) { card.style.cssText = 'background:var(--coral-soft);color:var(--coral)'; card.textContent = '✕ ' + e.message; }
   }
 }
 
@@ -976,25 +988,35 @@ function setupSync() {
     var braceIdx = raw.indexOf('{');
     if (braceIdx < 0) { toast('Config should contain { }'); return; }
     var cleaned = raw.slice(braceIdx);
-    // Quote unquoted JS object keys
     cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
     var cfg = JSON.parse(cleaned);
     if (!cfg.apiKey) { toast('Missing apiKey'); return; }
     if (!cfg.databaseURL) {
       if (cfg.projectId) cfg.databaseURL = 'https://' + cfg.projectId + '-default-rtdb.firebaseio.com';
-      else { toast('Missing databaseURL — enable Realtime Database in Firebase'); return; }
+      else { toast('Missing databaseURL — enable Realtime Database'); return; }
     }
     cfg.databaseURL = cfg.databaseURL.replace(/\/$/, '');
     localStorage.setItem(FB_CFG, JSON.stringify(cfg));
     localStorage.setItem(FB_KEY, key);
     fbDb = null;
     fbPath = null;
-    initFirebase();
     toast('Connecting...');
-    setTimeout(function() { if (fbDb) schedulePush(); }, 3000);
+    // Delete any existing Firebase app then reinitialise fresh
+    if (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length > 0) {
+      firebase.app().delete().then(function() {
+        initFirebase();
+        setTimeout(function() { if (fbDb) schedulePush(); }, 3000);
+      }, function() {
+        initFirebase();
+        setTimeout(function() { if (fbDb) schedulePush(); }, 3000);
+      });
+    } else {
+      initFirebase();
+      setTimeout(function() { if (fbDb) schedulePush(); }, 3000);
+    }
   } catch(e) {
     console.warn('Setup err:', e);
-    toast('Config error: ' + e.message.slice(0, 60));
+    toast('Config error: ' + e.message.slice(0, 80));
   }
 }
 
