@@ -878,144 +878,154 @@ setInterval(checkNotifs,60000);
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();openQC()}if(e.key==='Escape')closeM()});
 
 /* ---- FIREBASE SYNC ---- */
-var FB_CFG='shak_fb_cfg';
-var FB_KEY='shak_fb_key';
-var fbDb=null,fbPath=null,pushTimer=null;
+var FB_CFG = 'shak_fb_cfg';
+var FB_KEY = 'shak_fb_key';
+var fbDb = null;
+var fbPath = null;
+var pushTimer = null;
 
-function hsh(s){let h=0;for(let i=0;i<s.length;i++)h=(Math.imul(31,h)+s.charCodeAt(i))|0;return Math.abs(h).toString(36)}
-
-function syncStatus(state){
-  const bar=document.getElementById('sync-status-bar');
-  const card=document.getElementById('sync-card-status');
-  const map={
-    none:{b:'v1.1 · local only',c:'background:var(--cream-deep);color:var(--muted)',t:'○ Not connected — set up below'},
-    connecting:{b:'v1.1 · connecting...',c:'background:rgba(200,169,97,0.2);color:var(--gold-deep)',t:'◌ Connecting...'},
-    syncing:{b:'v1.1 · syncing...',c:'background:rgba(200,169,97,0.2);color:var(--gold-deep)',t:'↑ Syncing...'},
-    synced:{b:'v1.1 · ✓ synced',c:'background:rgba(122,139,111,0.2);color:var(--sage)',t:'✓ Connected & synced'},
-    error:{b:'v1.1 · sync error',c:'background:var(--coral-soft);color:var(--coral)',t:'✕ Error — check config'},
-    nodb:{b:'v1.1 · setup needed',c:'background:var(--coral-soft);color:var(--coral)',t:'✕ Missing databaseURL — enable Realtime Database in Firebase'}
-  };
-  const st=map[state]||map.none;
-  if(bar)bar.textContent=st.b;
-  if(card){card.style.cssText=st.c;card.textContent=st.t;}
+function hsh(s) {
+  var h = 0;
+  for (var i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return Math.abs(h).toString(36);
 }
 
-function schedulePush(){
-  if(!fbDb||!fbPath)return;
+function syncStatus(state) {
+  var bar = document.getElementById('sync-status-bar');
+  var card = document.getElementById('sync-card-status');
+  var msgs = {
+    none:       ['v1.1 · local only',      'background:var(--cream-deep);color:var(--muted)',        '○ Not connected — set up below'],
+    connecting: ['v1.1 · connecting...',   'background:rgba(200,169,97,0.2);color:var(--gold-deep)', '◌ Connecting...'],
+    syncing:    ['v1.1 · syncing...',      'background:rgba(200,169,97,0.2);color:var(--gold-deep)', '↑ Syncing...'],
+    synced:     ['v1.1 · ✓ synced',   'background:rgba(122,139,111,0.2);color:var(--sage)',     '✓ Connected & synced'],
+    error:      ['v1.1 · sync error',      'background:var(--coral-soft);color:var(--coral)',        '✕ Error — check config'],
+    nodb:       ['v1.1 · setup needed',    'background:var(--coral-soft);color:var(--coral)',        '✕ Missing databaseURL']
+  };
+  var m = msgs[state] || msgs.none;
+  if (bar) bar.textContent = m[0];
+  if (card) { card.style.cssText = m[1]; card.textContent = m[2]; }
+}
+
+function schedulePush() {
+  if (!fbDb || !fbPath) return;
   clearTimeout(pushTimer);
   syncStatus('syncing');
-  pushTimer=setTimeout(async()=>{
-    try{
-      S._ts=Date.now();
-      localStorage.setItem(DB,JSON.stringify(S));
-      await fbDb.ref(fbPath).set(S);
+  pushTimer = setTimeout(function() {
+    S._ts = Date.now();
+    localStorage.setItem(DB, JSON.stringify(S));
+    fbDb.ref(fbPath).set(S, function(err) {
+      if (err) { console.warn('Push err:', err); syncStatus('error'); }
+      else { syncStatus('synced'); }
+    });
+  }, 1500);
+}
+
+function pullFromCloud(quiet) {
+  if (!fbDb || !fbPath) return;
+  fbDb.ref(fbPath).once('value', function(snap) {
+    if (snap.exists()) {
+      var cloud = snap.val();
+      if (cloud && cloud._ts && (!S._ts || cloud._ts > S._ts)) {
+        S = Object.assign({}, DEF, cloud);
+        S.trips = (S.trips || []).map(function(t) {
+          return Object.assign({stops:[],flights:[],accommodation:[],todos:[],packing:[],budget:{target:0,spent:0}}, t);
+        });
+        localStorage.setItem(DB, JSON.stringify(S));
+        syncStatus('synced');
+        if (!quiet) { renderAll(); toast('Pulled from cloud ✓'); }
+      } else {
+        syncStatus('synced');
+        if (!quiet) toast('Already up to date');
+      }
+    } else {
       syncStatus('synced');
-    }catch(e){console.warn('Push failed:',e);syncStatus('error')}
-  },1500);
-}
-
-async function pullFromCloud(quiet){
-  if(!fbDb||!fbPath)return;
-  try{
-    const snap=await fbDb.ref(fbPath).get();
-    if(snap.exists()){
-      const cloud=snap.val();
-      if(cloud&&cloud._ts&&(!S._ts||cloud._ts>S._ts)){
-        S={...DEF,...cloud};
-        S.trips=S.trips.map(t=>({stops:[],flights:[],accommodation:[],todos:[],packing:[],budget:{target:0,spent:0},...t}));
-        localStorage.setItem(DB,JSON.stringify(S));
-        if(!quiet){renderAll();toast('Pulled from cloud ✓')}
-      }else if(!quiet){toast('Already up to date')}
-    }else if(!quiet){toast('Nothing in cloud yet')}
-  }catch(e){console.warn('Pull failed:',e);if(!quiet)toast('Pull failed — check connection')}
-}
-
-async function initFirebase(){
-  try{
-    const cfgRaw=localStorage.getItem(FB_CFG);
-    const syncKey=localStorage.getItem(FB_KEY);
-    if(!cfgRaw||!syncKey){syncStatus('none');return}
-    const cfg=JSON.parse(cfgRaw);
-    if(!cfg.databaseURL){syncStatus('nodb');return}
-    if(typeof firebase==='undefined'){
-      const bar=document.getElementById('sync-status-bar');
-      if(bar)bar.textContent='v1.1 · firebase not loaded';
-      return;
+      if (!quiet) toast('Nothing in cloud yet — save some data first');
     }
-    if(!firebase.apps.length)firebase.initializeApp(cfg);
-    fbDb=firebase.database();
-    fbPath='shak/'+hsh(syncKey);
+  }, function(err) {
+    console.warn('Pull err:', err);
+    syncStatus('error');
+    if (!quiet) toast('Pull failed: ' + err.message);
+  });
+}
+
+function initFirebase() {
+  var cfgRaw = localStorage.getItem(FB_CFG);
+  var syncKey = localStorage.getItem(FB_KEY);
+  if (!cfgRaw || !syncKey) { syncStatus('none'); return; }
+  if (typeof firebase === 'undefined') { syncStatus('none'); return; }
+  try {
+    var cfg = JSON.parse(cfgRaw);
+    if (!cfg.databaseURL) { syncStatus('nodb'); return; }
+    try { firebase.initializeApp(cfg); } catch(ex) { /* already initialised */ }
+    fbDb = firebase.database();
+    fbPath = 'shak/' + hsh(syncKey);
     syncStatus('connecting');
-    await pullFromCloud(true);
-    syncStatus('synced');
-  }catch(e){
-    console.warn('Firebase init error:',e);
-    const bar=document.getElementById('sync-status-bar');
-    if(bar)bar.textContent='Error: '+e.message.slice(0,40);
+    pullFromCloud(true);
+  } catch(e) {
+    console.warn('Firebase init err:', e);
     syncStatus('error');
   }
 }
 
-async function setupSync(){
-  const raw=document.getElementById('fb-config-input').value.trim();
-  const key=document.getElementById('sync-key-input').value.trim();
-  if(!key)return toast('Set a passphrase first');
-  if(!raw)return toast('Paste your Firebase config first');
-  try{
-    let cleaned=raw.replace(/^[\s\S]*?({[\s\S]*})/,'$1').trim();
-    cleaned=cleaned.replace(/([{,]\s*)([a-zA-Z_]\w*)\s*:/g,'$1"$2":');
-    const cfg=JSON.parse(cleaned);
-    if(!cfg.apiKey)return toast('Missing apiKey — check the config');
-    if(!cfg.databaseURL){
-      // Try to guess it from projectId
-      if(cfg.projectId){cfg.databaseURL='https://'+cfg.projectId+'-default-rtdb.firebaseio.com'}
-      else return toast('Missing databaseURL — check Realtime Database is enabled');
+function setupSync() {
+  var raw = document.getElementById('fb-config-input').value.trim();
+  var key = document.getElementById('sync-key-input').value.trim();
+  if (!key) { toast('Set a passphrase first'); return; }
+  if (!raw) { toast('Paste your Firebase config first'); return; }
+  try {
+    var braceIdx = raw.indexOf('{');
+    if (braceIdx < 0) { toast('Config should contain { }'); return; }
+    var cleaned = raw.slice(braceIdx);
+    // Quote unquoted JS object keys
+    cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+    var cfg = JSON.parse(cleaned);
+    if (!cfg.apiKey) { toast('Missing apiKey'); return; }
+    if (!cfg.databaseURL) {
+      if (cfg.projectId) cfg.databaseURL = 'https://' + cfg.projectId + '-default-rtdb.firebaseio.com';
+      else { toast('Missing databaseURL — enable Realtime Database in Firebase'); return; }
     }
-    // Strip trailing slash
-    cfg.databaseURL=cfg.databaseURL.replace(/\/$/,'');
-    localStorage.setItem(FB_CFG,JSON.stringify(cfg));
-    localStorage.setItem(FB_KEY,key);
-    // Safely delete existing Firebase app
-    if(typeof firebase!=='undefined'){
-      try{
-        const apps=firebase.apps;
-        for(const app of apps){await app.delete()}
-      }catch(e){console.warn('App delete:',e)}
-    }
-    fbDb=null;fbPath=null;
-    await initFirebase();
-    if(fbDb)schedulePush();
-  }catch(e){console.warn('Setup error:',e);toast('Config parse error: '+e.message.slice(0,60))}
+    cfg.databaseURL = cfg.databaseURL.replace(/\/$/, '');
+    localStorage.setItem(FB_CFG, JSON.stringify(cfg));
+    localStorage.setItem(FB_KEY, key);
+    fbDb = null;
+    fbPath = null;
+    initFirebase();
+    toast('Connecting...');
+    setTimeout(function() { if (fbDb) schedulePush(); }, 3000);
+  } catch(e) {
+    console.warn('Setup err:', e);
+    toast('Config error: ' + e.message.slice(0, 60));
+  }
 }
 
-async function pullNow(){
-  if(!fbDb)return toast('Not connected — set up sync first');
-  await pullFromCloud(false);
+function pullNow() {
+  if (!fbDb) { toast('Not connected — set up sync first'); return; }
+  pullFromCloud(false);
 }
 
-function disconnectSync(){
-  if(!confirm('Disconnect cloud sync? Local data stays.'))return;
-  localStorage.removeItem(FB_CFG);localStorage.removeItem(FB_KEY);
-  fbDb=null;fbPath=null;
-  document.getElementById('fb-config-input').value='';
-  document.getElementById('sync-key-input').value='';
+function disconnectSync() {
+  if (!confirm('Disconnect cloud sync? Local data stays.')) return;
+  localStorage.removeItem(FB_CFG);
+  localStorage.removeItem(FB_KEY);
+  fbDb = null; fbPath = null;
+  var ci = document.getElementById('fb-config-input');
+  var ki = document.getElementById('sync-key-input');
+  if (ci) ci.value = '';
+  if (ki) ki.value = '';
   syncStatus('none');
   toast('Disconnected');
 }
 
-initFirebase();
-
-// Pre-fill settings UI after page is ready
-window.addEventListener('DOMContentLoaded',function(){
-  try{
-    const c=localStorage.getItem('shak_fb_cfg');
-    const k=localStorage.getItem('shak_fb_key');
-    const ci=document.getElementById('fb-config-input');
-    const ki=document.getElementById('sync-key-input');
-    if(c&&ci)ci.value=c;
-    if(k&&ki)ki.value=k;
-  }catch(e){}
+window.addEventListener('DOMContentLoaded', function() {
+  var c = localStorage.getItem(FB_CFG);
+  var k = localStorage.getItem(FB_KEY);
+  var ci = document.getElementById('fb-config-input');
+  var ki = document.getElementById('sync-key-input');
+  if (c && ci) ci.value = c;
+  if (k && ki) ki.value = k;
 });
+
+initFirebase();
 </script>
 </body>
 </html>
